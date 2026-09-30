@@ -1,158 +1,88 @@
-# main.tf - Windows Server 2025 via libvirt provider
-
 terraform {
   required_providers {
-    libvirt = {
-      source  = "dmacvicar/libvirt"
-      version = "~> 0.9"
+    docker = {
+      source  = "kreuzwerker/docker"
+      version = "~> 3.0"
     }
   }
 }
 
-provider "libvirt" {
-  uri = "qemu:///system"
+provider "docker" {
+  host = "unix:///var/run/docker.sock"
 }
 
-variable "student_name" {
-  type        = string
-  description = "Your student identifier (e.g., jsmith, mgarcia)"
-
-  validation {
-    condition     = can(regex("^[a-z]{2,10}$", var.student_name))
-    error_message = "Student name must be 2-10 lowercase letters."
-  }
+resource "docker_network" "lamp_network" {
+  name   = "${var.student_name}-lamp-network"
+  driver = "bridge"
 }
 
-variable "cpu_cores" {
-  description = "Number of CPU cores"
-  type        = number
-  default     = 4
+resource "docker_volume" "db_data" {
+  name = "${var.student_name}-db-data"
 }
 
-variable "ram_size" {
-  description = "RAM in KiB (2097152 = 2 GB)"
-  type        = number
-  default     = 2097152
+resource "docker_image" "mysql" {
+  name = "mysql:8.0"
 }
 
-variable "image_path" {
-  description = "URL or path to the qcow2 base image"
-  type        = string
-  default     = "/opt/images/win2k25.qcow2"
-}
-
-variable "vm_name" {
-  description = "Name of the virtual machine"
-  type        = string
-  default     = "dc1"
-}
-
-resource "terraform_data" "disk" {
-  input = {
-    name  = "${var.student_name}-${var.vm_name}"
-    image = var.image_path
-  }
-
-  provisioner "local-exec" {
-    command = "sudo cp ${var.image_path} /var/lib/libvirt/images/${var.student_name}-${var.vm_name}.qcow2"
-  }
-
-  provisioner "local-exec" {
-    when    = destroy
-    command = "sudo rm -f /var/lib/libvirt/images/${self.input.name}.qcow2"
+resource "docker_image" "web" {
+  name = "${var.student_name}-lamp-web:latest"
+  build {
+    context    = abspath("${path.module}/php")
+    dockerfile = "Dockerfile"
   }
 }
 
-resource "libvirt_domain" "windows_server" {
-  name        = "${var.student_name}-${var.vm_name}"
-  memory      = var.ram_size
-  memory_unit = "KiB"
-  vcpu        = var.cpu_cores
-  type        = "kvm"
-  autostart   = true
+resource "docker_container" "db" {
+  name  = "${var.student_name}-db"
+  image = docker_image.mysql.image_id
 
-  cpu = {
-    mode = "host-passthrough"
-  }
-
-  os = {
-    type         = "hvm"
-    type_arch    = "x86_64"
-    type_machine = "q35"
-    boot_devices = [{ dev = "hd" }]
-  }
-
-  features = {
-    acpi = true
-    apic = {}
-  }
-
-  devices = {
-    disks = [
-      {
-        source = {
-          file = {
-            file = "/var/lib/libvirt/images/${var.student_name}-${var.vm_name}.qcow2"
-          }
-        }
-        driver = {
-          type = "qcow2"
-        }
-        target = {
-          dev = "sda"
-          bus = "sata"
-        }
-      }
-    ]
-
-    interfaces = [
-      {
-        source = {
-          network = {
-            network = "default"
-          }
-        }
-        model = {
-          type = "e1000e"
-        }
-      }
-    ]
-
-    graphics = [
-      {
-        spice = {
-          auto_port = true
-          listen    = "0.0.0.0"
-        }
-      }
-    ]
-
-    serials = [
-      {
-        type = "pty"
-      }
-    ]
-
-    consoles = [
-      {
-        type = "pty"
-        target = {
-          type = "serial"
-          port = 0
-        }
-      }
-    ]
-  }
-
-  depends_on = [
-    terraform_data.disk
+  env = [
+    "MYSQL_ROOT_PASSWORD=${var.mysql_root_password}",
+    "MYSQL_DATABASE=${var.mysql_database}",
+    "MYSQL_USER=${var.mysql_user}",
+    "MYSQL_PASSWORD=${var.mysql_password}",
   ]
+
+  volumes {
+    volume_name    = docker_volume.db_data.name
+    container_path = "/var/lib/mysql"
+  }
+
+  volumes {
+    host_path      = abspath("${path.module}/db/init.sql")
+    container_path = "/docker-entrypoint-initdb.d/init.sql"
+  }
+
+  networks_advanced {
+    name = docker_network.lamp_network.name
+  }
 }
 
-output "vm_name" {
-  value = "${var.student_name}-${var.vm_name}"
-}
+resource "docker_container" "web" {
+  count = var.web_count
+  name  = "${var.student_name}-web-${count.index}"
+  image = docker_image.web.image_id
 
-output "vnc_display" {
-  value = "virsh vncdisplay ${var.student_name}-${var.vm_name}"
+  ports {
+    internal = 80
+    external = var.web_port + count.index
+  }
+
+  volumes {
+    host_path      = abspath("${path.module}/php/src")
+    container_path = "/var/www/html"
+  }
+
+  env = [
+    "DB_HOST=${var.student_name}-db",
+    "DB_USER=${var.mysql_user}",
+    "DB_PASSWORD=${var.mysql_password}",
+    "DB_NAME=${var.mysql_database}",
+  ]
+
+  networks_advanced {
+    name = docker_network.lamp_network.name
+  }
+
+  depends_on = [docker_container.db]
 }
