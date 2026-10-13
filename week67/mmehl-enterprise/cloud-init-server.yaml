@@ -1,0 +1,27 @@
+#cloud-config
+hostname: ${hostname}
+fqdn: ${hostname}.local
+users:
+  - default
+  - name: ${student_name}
+    gecos: "Student User"
+    sudo: "ALL=(ALL) NOPASSWD:ALL"
+    groups: users, admin
+    shell: /bin/bash
+    lock_passwd: false
+    hashed_passwd: $6$4mfPv.9JIU2h.mXj$wYZrDoic69QoQSSTbYUlzzElIsfceUdWsNJp9BaQfaEJoL3o3AorPNEFtT6sLrSmBwc1lGaCokAl.YpPOuuR31
+    ssh_authorized_keys:
+      - ${ssh_public_key}
+ssh_pwauth: true
+package_update: true
+packages:
+  - openssh-server
+  - curl
+  - wget
+  - vim
+  - git
+  - net-tools
+runcmd:
+  - echo 'root:$6$4mfPv.9JIU2h.mXj$wYZrDoic69QoQSSTbYUlzzElIsfceUdWsNJp9BaQfaEJoL3o3AorPNEFtT6sLrSmBwc1lGaCokAl.YpPOuuR31' | chpasswd -e
+  - systemctl restart sshd
+  - echo "${hostname} - SYS-350 Enterprise VM" > /etc/motd
